@@ -58,7 +58,9 @@
     .entry {
       background: #16213e; border-radius: 12px; padding: 14px;
       margin-bottom: 10px; border-left: 4px solid #e94560;
+      position: relative;
     }
+    .entry.submitted { border-left-color: #27ae60; }
     .entry-header {
       display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px;
     }
@@ -78,15 +80,21 @@
       font-size: 0.95rem; font-family: 'SF Mono','Menlo',monospace;
       color: #eee; word-break: break-all;
     }
-    .entry-actions { display: flex; gap: 8px; }
+    .entry-submitted-badge {
+      font-size: 0.7rem; color: #27ae60; margin-top: 4px; font-weight: 600;
+    }
+
+    .entry-actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .entry-actions button {
-      flex: 1; padding: 8px; border: none; border-radius: 8px;
-      font-size: 0.85rem; font-weight: 600; cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
+      flex: 1; padding: 8px 4px; border: none; border-radius: 8px;
+      font-size: 0.8rem; font-weight: 600; cursor: pointer;
+      -webkit-tap-highlight-color: transparent; min-width: 0;
     }
     .btn-copy { background: #2c3e6d; color: #eee; }
     .btn-map { background: #1a6b3c; color: #eee; }
-    .btn-copy:active, .btn-map:active { opacity: 0.7; }
+    .btn-submit { background: #8e44ad; color: #eee; }
+    .btn-delete { background: #7f1d1d; color: #eee; }
+    .btn-copy:active, .btn-map:active, .btn-submit:active, .btn-delete:active { opacity: 0.7; }
 
     #count { font-size: 0.8rem; color: #666; margin-top: 12px; text-align: center; }
 
@@ -110,6 +118,26 @@
       background: none; border: none; color: white;
       font-size: 2rem; cursor: pointer; padding: 10px;
     }
+
+    /* Delete confirmation */
+    #confirmOverlay {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.8); z-index: 1001;
+      align-items: center; justify-content: center;
+    }
+    #confirmOverlay.active { display: flex; }
+    .confirm-box {
+      background: #16213e; border-radius: 16px; padding: 24px; text-align: center;
+      max-width: 300px; width: 90%;
+    }
+    .confirm-box p { margin-bottom: 16px; font-size: 0.95rem; line-height: 1.4; }
+    .confirm-box .confirm-actions { display: flex; gap: 10px; }
+    .confirm-box button {
+      flex: 1; padding: 12px; border: none; border-radius: 10px;
+      font-size: 0.95rem; font-weight: 600; cursor: pointer;
+    }
+    .confirm-cancel { background: #2c3e6d; color: #eee; }
+    .confirm-delete { background: #c0392b; color: #fff; }
   </style>
 </head>
 <body>
@@ -130,17 +158,30 @@
     <img id="photoViewerImg" src="" alt="Pothole photo">
   </div>
 
+  <!-- Delete confirmation dialog -->
+  <div id="confirmOverlay">
+    <div class="confirm-box">
+      <p id="confirmMsg">Delete this capture?</p>
+      <div class="confirm-actions">
+        <button class="confirm-cancel" onclick="cancelDelete()">Cancel</button>
+        <button class="confirm-delete" onclick="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <script>
-    const STORAGE_KEY = 'pothole_captures';
-    const PHOTO_PREFIX = 'pothole_photo_';
-    let captures = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    let lastSavedId = null;   // ID of the most recently saved entry (for attaching photo)
-    let photoMode = false;     // true when button means "add photo"
-    let photoTimer = null;
+    var STORAGE_KEY = 'pothole_captures';
+    var PHOTO_PREFIX = 'pothole_photo_';
+    var SURVEY_URL = 'https://survey123.arcgis.com/share/0703109c15504586b377cfb78f61fd2b';
+    var captures = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    var lastSavedId = null;
+    var photoMode = false;
+    var photoTimer = null;
+    var pendingDeleteIndex = -1;
 
     function render() {
-      const hist = document.getElementById('history');
-      const countEl = document.getElementById('count');
+      var hist = document.getElementById('history');
+      var countEl = document.getElementById('count');
 
       if (captures.length === 0) {
         hist.innerHTML = '<div class="empty-state">No captures yet.<br>Tap the button to grab your<br>GPS location.</div>';
@@ -154,17 +195,26 @@
           ? '<img class="entry-thumb" src="' + photoData + '" onclick="viewPhoto(\'' + c.id + '\')" alt="Photo">'
           : '<div class="entry-thumb-placeholder">No<br>photo</div>';
 
-        return '<div class="entry">' +
+        var submittedBadge = c.submitted
+          ? '<div class="entry-submitted-badge">Submitted</div>'
+          : '';
+
+        var entryClass = c.submitted ? 'entry submitted' : 'entry';
+
+        return '<div class="' + entryClass + '">' +
           '<div class="entry-header">' +
             thumbHtml +
             '<div class="entry-info">' +
               '<div class="entry-time">' + c.time + '</div>' +
               '<div class="entry-coords">' + c.lat.toFixed(6) + ', ' + c.lng.toFixed(6) + '</div>' +
+              submittedBadge +
             '</div>' +
           '</div>' +
           '<div class="entry-actions">' +
+            '<button class="btn-submit" onclick="submitToSurvey(' + i + ')">Submit</button>' +
             '<button class="btn-copy" onclick="copyCoords(' + i + ')">Copy</button>' +
             '<button class="btn-map" onclick="openMap(' + i + ')">Map</button>' +
+            '<button class="btn-delete" onclick="askDelete(' + i + ')">Del</button>' +
           '</div>' +
         '</div>';
       }).join('');
@@ -172,14 +222,12 @@
       countEl.textContent = captures.length + ' capture' + (captures.length !== 1 ? 's' : '') + ' saved';
     }
 
-    // Single button handler â either captures GPS or opens camera
+    // Single button handler
     function handleButtonTap() {
       if (photoMode) {
-        // User tapped the "ADD PHOTO" button â this IS a user gesture, so camera will open
         document.getElementById('cameraInput').click();
         return;
       }
-      // Normal mode: capture GPS
       captureGPS();
     }
 
@@ -204,10 +252,10 @@
             lng: pos.coords.longitude,
             accuracy: pos.coords.accuracy,
             time: new Date().toLocaleString(),
-            hasPhoto: false
+            hasPhoto: false,
+            submitted: false
           };
 
-          // Save the entry immediately
           captures.unshift(entry);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
           lastSavedId = entry.id;
@@ -220,7 +268,6 @@
 
           render();
 
-          // After a brief moment, switch button to "ADD PHOTO" mode
           setTimeout(function() {
             enterPhotoMode();
           }, 800);
@@ -241,7 +288,6 @@
       btn.innerHTML = 'ADD<br>PHOTO';
       document.getElementById('status').textContent = 'Tap to add a photo, or wait to skip';
 
-      // Auto-exit photo mode after 8 seconds
       if (photoTimer) clearTimeout(photoTimer);
       photoTimer = setTimeout(function() {
         exitPhotoMode();
@@ -254,7 +300,7 @@
       lastSavedId = null;
       btn.className = '';
       btn.innerHTML = 'TAP TO<br>CAPTURE';
-      document.getElementById('status').textContent = 'Ready';
+      document.getEmementById('status').textContent = 'Ready';
       if (photoTimer) { clearTimeout(photoTimer); photoTimer = null; }
     }
 
@@ -278,7 +324,6 @@
 
             try {
               localStorage.setItem(PHOTO_PREFIX + lastSavedId, compressed);
-              // Update the entry's hasPhoto flag
               for (var i = 0; i < captures.length; i++) {
                 if (captures[i].id === lastSavedId) {
                   captures[i].hasPhoto = true;
@@ -298,13 +343,23 @@
         };
         reader.readAsDataURL(input.files[0]);
       } else {
-        // No file selected or no entry to attach to
         exitPhotoMode();
       }
 
-      // Reset so same file can be selected again
       input.value = '';
     });
+
+    // Submit to Survey123 with GPS pre-filled
+    function submitToSurvey(i) {
+      var c = captures[i];
+      var url = SURVEY_URL + '?center=' + c.lat + ',' + c.lng;
+      window.open(url, '_blank');
+
+      // Mark as submitted
+      captures[i].submitted = true;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
+      render();
+    }
 
     function copyCoords(i) {
       var c = captures[i];
@@ -331,6 +386,31 @@
 
     function closePhoto() {
       document.getElementById('photoViewer').classList.remove('active');
+    }
+
+    // Delete with confirmation
+    function askDelete(i) {
+      pendingDeleteIndex = i;
+      var c = captures[i];
+      document.getElementById('confirmMsg').textContent = 'Delete capture at ' + c.lat.toFixed(4) + ', ' + c.lng.toFixed(4) + '?';
+      document.getElementById('confirmOverlay').classList.add('active');
+    }
+
+    function cancelDelete() {
+      pendingDeleteIndex = -1;
+      document.getElementById('confirmOverlay').classList.remove('active');
+    }
+
+    function confirmDelete() {
+      if (pendingDeleteIndex >= 0 && pendingDeleteIndex < captures.length) {
+        var removed = captures.splice(pendingDeleteIndex, 1)[0];
+        // Remove photo too
+        localStorage.removeItem(PHOTO_PREFIX + removed.id);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
+        render();
+      }
+      pendingDeleteIndex = -1;
+      document.getElementById('confirmOverlay').classList.remove('active');
     }
 
     render();
