@@ -93,8 +93,9 @@
     .btn-copy { background: #2c3e6d; color: #eee; }
     .btn-map { background: #1a6b3c; color: #eee; }
     .btn-submit { background: #8e44ad; color: #eee; }
+    .btn-save { background: #2874a6; color: #eee; }
     .btn-delete { background: #7f1d1d; color: #eee; }
-    .btn-copy:active, .btn-map:active, .btn-submit:active, .btn-delete:active { opacity: 0.7; }
+    .btn-copy:active, .btn-map:active, .btn-submit:active, .btn-save:active, .btn-delete:active { opacity: 0.7; }
 
     #count { font-size: 0.8rem; color: #666; margin-top: 12px; text-align: center; }
 
@@ -117,6 +118,15 @@
       position: absolute; top: 20px; right: 20px;
       background: none; border: none; color: white;
       font-size: 2rem; cursor: pointer; padding: 10px;
+    }
+    #photoViewer .save-btn {
+      margin-top: 16px; padding: 12px 32px; border: none; border-radius: 10px;
+      background: #2874a6; color: #fff; font-size: 1rem; font-weight: 600;
+      cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    #photoViewer .save-btn:active { opacity: 0.7; }
+    #photoViewer .save-hint {
+      margin-top: 8px; font-size: 0.75rem; color: #888; text-align: center;
     }
 
     /* Delete confirmation */
@@ -156,6 +166,8 @@
   <div id="photoViewer" onclick="closePhoto()">
     <button class="close-btn" onclick="closePhoto()">&times;</button>
     <img id="photoViewerImg" src="" alt="Pothole photo">
+    <button class="save-btn" id="viewerSaveBtn" onclick="event.stopPropagation(); saveViewerPhoto();">Save to Photos</button>
+    <div class="save-hint">Or long-press the image above &rarr; Add to Photos</div>
   </div>
 
   <!-- Delete confirmation dialog -->
@@ -212,6 +224,7 @@
           '</div>' +
           '<div class="entry-actions">' +
             '<button class="btn-submit" onclick="submitToSurvey(' + i + ')">Submit</button>' +
+            (photoData ? '<button class="btn-save" onclick="savePhoto(\'' + c.id + '\')">Save</button>' : '') +
             '<button class="btn-copy" onclick="copyCoords(' + i + ')">Copy</button>' +
             '<button class="btn-map" onclick="openMap(' + i + ')">Map</button>' +
             '<button class="btn-delete" onclick="askDelete(' + i + ')">Del</button>' +
@@ -300,7 +313,7 @@
       lastSavedId = null;
       btn.className = '';
       btn.innerHTML = 'TAP TO<br>CAPTURE';
-      document.getEmementById('status').textContent = 'Ready';
+      document.getElementById('status').textContent = 'Ready';
       if (photoTimer) { clearTimeout(photoTimer); photoTimer = null; }
     }
 
@@ -379,13 +392,41 @@
       event.stopPropagation();
       var data = localStorage.getItem(PHOTO_PREFIX + id);
       if (data) {
+        currentViewerId = id;
         document.getElementById('photoViewerImg').src = data;
         document.getElementById('photoViewer').classList.add('active');
       }
     }
 
+    var currentViewerId = null;
+
     function closePhoto() {
       document.getElementById('photoViewer').classList.remove('active');
+      currentViewerId = null;
+    }
+
+    // Save photo to camera roll via download link
+    function savePhoto(id) {
+      var data = localStorage.getItem(PHOTO_PREFIX + id);
+      if (!data) return;
+      triggerPhotoDownload(data, 'pothole-' + id + '.jpg');
+    }
+
+    function saveViewerPhoto() {
+      var src = document.getElementById('photoViewerImg').src;
+      if (src) {
+        triggerPhotoDownload(src, 'pothole-photo.jpg');
+      }
+    }
+
+    function triggerPhotoDownload(dataUrl, filename) {
+      var a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() { document.body.removeChild(a); }, 100);
     }
 
     // Delete with confirmation
