@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Pothole GPS">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <title>Pothole GPS</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e; color: #eee; min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 20px; padding-top: env(safe-area-inset-top, 20px);
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 16px; color: #e94560; letter-spacing: 1px; }
+    #captureBtn {
+      width: 180px; height: 180px; border-radius: 50%;
+      border: 4px solid #e94560;
+      background: radial-gradient(circle at 40% 40%, #e94560, #c0392b);
+      color: white; font-size: 1.3rem; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+      box-shadow: 0 0 30px rgba(233,69,96,0.4);
+      transition: transform 0.15s, box-shadow 0.15s;
+      -webkit-tap-highlight-color: transparent; user-select: none; margin: 20px 0; line-height: 1.3;
+    }
+    #captureBtn:active { transform: scale(0.93); box-shadow: 0 0 15px rgba(233,69,96,0.6); }
+    #captureBtn.capturing {
+      background: radial-gradient(circle at 40% 40%, #f39c12, #e67e22);
+      border-color: #f39c12; box-shadow: 0 0 30px rgba(243,156,18,0.5);
+    }
+    #captureBtn.success {
+      background: radial-gradient(circle at 40% 40%, #27ae60, #1e8449);
+      border-color: #27ae60; box-shadow: 0 0 30px rgba(39,174,96,0.5);
+    }
+    #status { font-size: 0.9rem; color: #aaa; margin-bottom: 16px; text-align: center; }
+    #history { width: 100%; max-width: 400px; flex: 1; overflow-y: auto; }
+    .entry {
+      background: #16213e; border-radius: 12px; padding: 14px;
+      margin-bottom: 10px; border-left: 4px solid #e94560;
+    }
+    .entry-time { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .entry-coords {
+      font-size: 1rem; font-family: 'SF Mono','Menlo',monospace;
+      color: #eee; margin-bottom: 8px; word-break: break-all;
+    }
+    .entry-actions { display: flex; gap: 8px; }
+    .entry-actions button {
+      flex: 1; padding: 8px; border: none; border-radius: 8px;
+      font-size: 0.85rem; font-weight: 600; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn-copy { background: #2c3e6d; color: #eee; }
+    .btn-map { background: #1a6b3c; color: #eee; }
+    .btn-copy:active, .btn-map:active { opacity: 0.7; }
+    #count { font-size: 0.8rem; color: #666; margin-top: 12px; text-align: center; }
+    .empty-state { text-align: center; color: #555; margin-top: 40px; font-size: 0.95rem; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>POTHOLE GPS</h1>
+  <button id="captureBtn" onclick="capture()">TAP TO<br>CAPTURE</button>
+  <div id="status">Ready</div>
+  <div id="history"></div>
+  <div id="count"></div>
+  <script>
+    const STORAGE_KEY = 'pothole_captures';
+    let captures = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    function render() {
+      const hist = document.getElementById('history');
+      const countEl = document.getElementById('count');
+      if (captures.length === 0) {
+        hist.innerHTML = '<div class="empty-state">No captures yet.<br>Tap the button to grab your GPS location.</div>';
+        countEl.textContent = ''; return;
+      }
+      hist.innerHTML = captures.map((c, i) => '<div class="entry"><div class="entry-time">'+c.time+'</div><div class="entry-coords">'+c.lat.toFixed(6)+', '+c.lng.toFixed(6)+'</div><div class="entry-actions"><button class="btn-copy" onclick="copyCoords('+i+')">Copy</button><button class="btn-map" onclick="openMap('+i+')">Open Map</button></div></div>').join('');
+      countEl.textContent = captures.length+' capture'+(captures.length !== 1 ? 's' : '')+' saved';
+    }
+    function capture() {
+      const btn = document.getElementById('captureBtn');
+      const status = document.getElementById('status');
+      if (!navigator.geolocation) { status.textContent = 'GPS not supported'; return; }
+      btn.className = 'capturing'; btn.innerHTML = 'GETTING<br>LOCATION...';
+      status.textContent = 'Acquiring GPS...';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const entry = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, time: new Date().toLocaleString() };
+          captures.unshift(entry);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
+          btn.className = 'success'; btn.innerHTML = 'CAPTURED!';
+          status.textContent = entry.lat.toFixed(6)+', '+entry.lng.toFixed(6)+' (\u00b1'+Math.round(entry.accuracy)+'m)';
+          if (navigator.vibrate) navigator.vibrate(100);
+          render();
+          setTimeout(() => { btn.className = ''; btn.innerHTML = 'TAP TO<br>CAPTURE'; }, 1500);
+        },
+        (err) => { btn.className = ''; btn.innerHTML = 'TAP TO<br>CAPTURE'; status.textContent = 'Error: '+err.message; },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+    function copyCoords(i) {
+      const c = captures[i]; const text = c.lat.toFixed(6)+', '+c.lng.toFixed(6);
+      navigator.clipboard.writeText(text).then(() => { event.target.textContent = 'Copied!'; setTimeout(() => { event.target.textContent = 'Copy'; }, 1200); });
+    }
+    function openMap(i) {
+      const c = captures[i];
+      window.open('https://maps.apple.com/?ll='+c.lat+','+c.lng+'&q=Pothole', '_blank');
+    }
+    render();
+  </script>
+</body>
+</html>
