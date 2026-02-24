@@ -21,6 +21,10 @@
 
     h1 { font-size: 1.4rem; margin-bottom: 12px; color: #e94560; letter-spacing: 1px; }
 
+    .subtitle {
+      font-size: 0.8rem; color: #888; margin-bottom: 16px; text-align: center;
+    }
+
     #captureBtn {
       width: 170px; height: 170px; border-radius: 50%;
       border: 4px solid #e94560;
@@ -39,6 +43,10 @@
     #captureBtn.success {
       background: radial-gradient(circle at 40% 40%, #27ae60, #1e8449);
       border-color: #27ae60; box-shadow: 0 0 30px rgba(39,174,96,0.5);
+    }
+    #captureBtn.photo-ready {
+      background: radial-gradient(circle at 40% 40%, #3498db, #2980b9);
+      border-color: #3498db; box-shadow: 0 0 30px rgba(52,152,219,0.5);
     }
 
     #status { font-size: 0.9rem; color: #aaa; margin-bottom: 12px; text-align: center; }
@@ -87,6 +95,7 @@
       font-size: 0.95rem; line-height: 1.6;
     }
 
+    /* Full-screen photo viewer */
     #photoViewer {
       display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0,0,0,0.92); z-index: 1000;
@@ -101,24 +110,21 @@
       background: none; border: none; color: white;
       font-size: 2rem; cursor: pointer; padding: 10px;
     }
-
-    .subtitle {
-      font-size: 0.8rem; color: #888; margin-bottom: 16px; text-align: center;
-    }
   </style>
 </head>
 <body>
   <h1>POTHOLE GPS</h1>
-  <div class="subtitle">Tap to capture location + photo</div>
+  <div class="subtitle">Tap to capture location, then optionally add a photo</div>
 
-  <button id="captureBtn" onclick="capture()">TAP TO<br>CAPTURE</button>
-  <input type="file" id="cameraInput" accept="image/*" capture="environment" onchange="handlePhoto(this)">
+  <button id="captureBtn" onclick="handleButtonTap()">TAP TO<br>CAPTURE</button>
+  <input type="file" id="cameraInput" accept="image/*" capture="environment">
 
   <div id="status">Ready</div>
 
   <div id="history"></div>
   <div id="count"></div>
 
+  <!-- Full-screen photo viewer -->
   <div id="photoViewer" onclick="closePhoto()">
     <button class="close-btn" onclick="closePhoto()">&times;</button>
     <img id="photoViewerImg" src="" alt="Pothole photo">
@@ -128,108 +134,195 @@
     const STORAGE_KEY = 'pothole_captures';
     const PHOTO_PREFIX = 'pothole_photo_';
     let captures = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    let pendingEntry = null;
+    let lastSavedId = null;   // ID of the most recently saved entry (for attaching photo)
+    let photoMode = false;     // true when button means "add photo"
+    let photoTimer = null;
 
     function render() {
       const hist = document.getElementById('history');
       const countEl = document.getElementById('count');
+
       if (captures.length === 0) {
-        hist.innerHTML = '<div class="empty-state">No captures yet.<br>Tap the button to grab your<br>GPS location + photo.</div>';
+        hist.innerHTML = '<div class="empty-state">No captures yet.<br>Tap the button to grab your<br>GPS location.</div>';
         countEl.textContent = '';
         return;
       }
-      hist.innerHTML = captures.map((c, i) => {
-        const photoData = localStorage.getItem(PHOTO_PREFIX + c.id);
-        const thumbHtml = photoData
+
+      hist.innerHTML = captures.map(function(c, i) {
+        var photoData = localStorage.getItem(PHOTO_PREFIX + c.id);
+        var thumbHtml = photoData
           ? '<img class="entry-thumb" src="' + photoData + '" onclick="viewPhoto(\'' + c.id + '\')" alt="Photo">'
           : '<div class="entry-thumb-placeholder">No<br>photo</div>';
-        return '<div class="entry"><div class="entry-header">' + thumbHtml +
-          '<div class="entry-info"><div class="entry-time">' + c.time + '</div>' +
-          '<div class="entry-coords">' + c.lat.toFixed(6) + ', ' + c.lng.toFixed(6) + '</div></div></div>' +
-          '<div class="entry-actions"><button class="btn-copy" onclick="copyCoords(' + i + ')">Copy</button>' +
-          '<button class="btn-map" onclick="openMap(' + i + ')">Map</button></div></div>';
+
+        return '<div class="entry">' +
+          '<div class="entry-header">' +
+            thumbHtml +
+            '<div class="entry-info">' +
+              '<div class="entry-time">' + c.time + '</div>' +
+              '<div class="entry-coords">' + c.lat.toFixed(6) + ', ' + c.lng.toFixed(6) + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="entry-actions">' +
+            '<button class="btn-copy" onclick="copyCoords(' + i + ')">Copy</button>' +
+            '<button class="btn-map" onclick="openMap(' + i + ')">Map</button>' +
+          '</div>' +
+        '</div>';
       }).join('');
+
       countEl.textContent = captures.length + ' capture' + (captures.length !== 1 ? 's' : '') + ' saved';
     }
 
-    function capture() {
-      const btn = document.getElementById('captureBtn');
-      const status = document.getElementById('status');
-      if (!navigator.geolocation) { status.textContent = 'GPS not supported on this device'; return; }
+    // Single button handler â either captures GPS or opens camera
+    function handleButtonTap() {
+      if (photoMode) {
+        // User tapped the "ADD PHOTO" button â this IS a user gesture, so camera will open
+        document.getElementById('cameraInput').click();
+        return;
+      }
+      // Normal mode: capture GPS
+      captureGPS();
+    }
+
+    function captureGPS() {
+      var btn = document.getElementById('captureBtn');
+      var status = document.getElementById('status');
+
+      if (!navigator.geolocation) {
+        status.textContent = 'GPS not supported on this device';
+        return;
+      }
+
       btn.className = 'capturing';
       btn.innerHTML = 'GETTING<br>LOCATION...';
       status.textContent = 'Acquiring GPS...';
+
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const entry = {
-            id: Date.now().toString(36), lat: pos.coords.latitude, lng: pos.coords.longitude,
-            accuracy: pos.coords.accuracy, time: new Date().toLocaleString(), hasPhoto: false
+        function(pos) {
+          var entry = {
+            id: Date.now().toString(36),
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            time: new Date().toLocaleString(),
+            hasPhoto: false
           };
-          pendingEntry = entry;
-          btn.className = 'success';
-          btn.innerHTML = 'GOT IT!';
-          status.textContent = entry.lat.toFixed(6) + ', ' + entry.lng.toFixed(6) + ' (\u00b1' + Math.round(entry.accuracy) + 'm)';
+
+          // Save the entry immediately
+          captures.unshift(entry);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
+          lastSavedId = entry.id;
+
           if (navigator.vibrate) navigator.vibrate(100);
-          document.getElementById('cameraInput').click();
-          setTimeout(() => { if (pendingEntry) savePendingEntry(); }, 60000);
+
+          btn.className = 'success';
+          btn.innerHTML = 'SAVED!';
+          status.textContent = entry.lat.toFixed(6) + ', ' + entry.lng.toFixed(6) + ' (\u00b1' + Math.round(entry.accuracy) + 'm)';
+
+          render();
+
+          // After a brief moment, switch button to "ADD PHOTO" mode
+          setTimeout(function() {
+            enterPhotoMode();
+          }, 800);
         },
-        (err) => { btn.className = ''; btn.innerHTML = 'TAP TO<br>CAPTURE'; status.textContent = 'Error: ' + err.message; },
+        function(err) {
+          btn.className = '';
+          btn.innerHTML = 'TAP TO<br>CAPTURE';
+          status.textContent = 'Error: ' + err.message;
+        },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     }
 
-    function handlePhoto(input) {
-      if (input.files && input.files[0] && pendingEntry) {
-        const reader = new FileReader();
+    function enterPhotoMode() {
+      var btn = document.getElementById('captureBtn');
+      photoMode = true;
+      btn.className = 'photo-ready';
+      btn.innerHTML = 'ADD<br>PHOTO';
+      document.getElementById('status').textContent = 'Tap to add a photo, or wait to skip';
+
+      // Auto-exit photo mode after 8 seconds
+      if (photoTimer) clearTimeout(photoTimer);
+      photoTimer = setTimeout(function() {
+        exitPhotoMode();
+      }, 8000);
+    }
+
+    function exitPhotoMode() {
+      var btn = document.getElementById('captureBtn');
+      photoMode = false;
+      lastSavedId = null;
+      btn.className = '';
+      btn.innerHTML = 'TAP TO<br>CAPTURE';
+      document.getElementById('status').textContent = 'Ready';
+      if (photoTimer) { clearTimeout(photoTimer); photoTimer = null; }
+    }
+
+    // Handle photo from camera
+    document.getElementById('cameraInput').addEventListener('change', function() {
+      var input = this;
+      if (input.files && input.files[0] && lastSavedId) {
+        var reader = new FileReader();
         reader.onload = function(e) {
-          const img = new Image();
+          var img = new Image();
           img.onload = function() {
-            const canvas = document.createElement('canvas');
-            const maxSize = 800;
-            let w = img.width, h = img.height;
+            var canvas = document.createElement('canvas');
+            var maxSize = 800;
+            var w = img.width, h = img.height;
             if (w > h) { if (w > maxSize) { h = h * maxSize / w; w = maxSize; } }
             else { if (h > maxSize) { w = w * maxSize / h; h = maxSize; } }
-            canvas.width = w; canvas.height = h;
+            canvas.width = w;
+            canvas.height = h;
             canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-            const compressed = canvas.toDataURL('image/jpeg', 0.6);
-            try { localStorage.setItem(PHOTO_PREFIX + pendingEntry.id, compressed); pendingEntry.hasPhoto = true; }
-            catch (e) { console.log('Storage full, saving without photo'); }
-            savePendingEntry();
+            var compressed = canvas.toDataURL('image/jpeg', 0.6);
+
+            try {
+              localStorage.setItem(PHOTO_PREFIX + lastSavedId, compressed);
+              // Update the entry's hasPhoto flag
+              for (var i = 0; i < captures.length; i++) {
+                if (captures[i].id === lastSavedId) {
+                  captures[i].hasPhoto = true;
+                  break;
+                }
+              }
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
+              document.getElementById('status').textContent = 'Photo added!';
+            } catch (e) {
+              document.getElementById('status').textContent = 'Storage full, photo not saved';
+            }
+
+            render();
+            exitPhotoMode();
           };
           img.src = e.target.result;
         };
         reader.readAsDataURL(input.files[0]);
       } else {
-        if (pendingEntry) savePendingEntry();
+        // No file selected or no entry to attach to
+        exitPhotoMode();
       }
-      input.value = '';
-    }
 
-    function savePendingEntry() {
-      if (!pendingEntry) return;
-      captures.unshift(pendingEntry);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
-      pendingEntry = null;
-      render();
-      setTimeout(() => { document.getElementById('captureBtn').className = ''; document.getElementById('captureBtn').innerHTML = 'TAP TO<br>CAPTURE'; }, 1000);
-    }
+      // Reset so same file can be selected again
+      input.value = '';
+    });
 
     function copyCoords(i) {
-      const c = captures[i];
-      navigator.clipboard.writeText(c.lat.toFixed(6) + ', ' + c.lng.toFixed(6)).then(() => {
+      var c = captures[i];
+      var text = c.lat.toFixed(6) + ', ' + c.lng.toFixed(6);
+      navigator.clipboard.writeText(text).then(function() {
         event.target.textContent = 'Copied!';
-        setTimeout(() => { event.target.textContent = 'Copy'; }, 1200);
+        setTimeout(function() { event.target.textContent = 'Copy'; }, 1200);
       });
     }
 
     function openMap(i) {
-      const c = captures[i];
+      var c = captures[i];
       window.open('https://maps.apple.com/?ll=' + c.lat + ',' + c.lng + '&q=Pothole', '_blank');
     }
 
     function viewPhoto(id) {
       event.stopPropagation();
-      const data = localStorage.getItem(PHOTO_PREFIX + id);
+      var data = localStorage.getItem(PHOTO_PREFIX + id);
       if (data) {
         document.getElementById('photoViewerImg').src = data;
         document.getElementById('photoViewer').classList.add('active');
@@ -239,10 +332,6 @@
     function closePhoto() {
       document.getElementById('photoViewer').classList.remove('active');
     }
-
-    document.getElementById('cameraInput').addEventListener('cancel', function() {
-      if (pendingEntry) savePendingEntry();
-    });
 
     render();
   </script>
